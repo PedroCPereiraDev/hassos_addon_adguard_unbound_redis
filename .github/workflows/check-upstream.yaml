@@ -1,0 +1,143 @@
+---
+name: Check Upstream Updates
+
+on:
+  schedule:
+    # Check daily at 06:00 UTC
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+env:
+  UPSTREAM_REPO: imthai/adguardhome-unbound-redis
+  ADDON_SLUG: adguard-unbound-redis
+  DIGEST_FILE: .github/upstream-digest
+
+jobs:
+  check:
+    name: Check for upstream updates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Get upstream info
+        id: upstream
+        run: |
+          # Use the manifest list digest (single stable value for the whole
+          # multi-arch image) rather than per-architecture image digests which
+          # include attestation layers that can vary between API calls.
+          TAG_INFO=$(curl -sf \
+            "https://hub.docker.com/v2/repositories/${UPSTREAM_REPO}/tags/latest")
+
+          DIGEST=$(echo "${TAG_INFO}" | jq -r '.digest')
+
+          if [ -z "${DIGEST}" ] || [ "${DIGEST}" = "null" ]; then
+            echo "::error::Failed to fetch upstream digest"
+            exit 1
+          fi
+
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Upstream manifest digest: ${DIGEST}"
+
+          # Get the latest semver tag (skip 'latest' and 'test')
+          UPSTREAM_TAG=$(curl -sf \
+            "https://hub.docker.com/v2/repositories/${UPSTREAM_REPO}/tags?page_size=25&ordering=last_updated" \
+            | jq -r '.results[].name' \
+            | grep -E '^v?[0-9]+\.' \
+            | head -1)
+
+          echo "tag=${UPSTREAM_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Upstream tag: ${UPSTREAM_TAG}"
+
+      - name: Compare with stored digest
+        id: compare
+        run: |
+          STORED=$(cat "${DIGEST_FILE}" 2>/dev/null || echo "")
+          echo "Stored digest: ${STORED:-<empty>}"
+          echo "Current digest: ${{ steps.upstream.outputs.digest }}"
+
+          if [ -z "${STORED}" ]; then
+            # First run or empty file — seed the digest without releasing.
+            # This prevents a false-positive release when the file is
+            # initialized or reset.
+            echo "changed=seed" >> "$GITHUB_OUTPUT"
+            echo "First run: will seed digest file without creating a release."
+          elif [ "${STORED}" = "${{ steps.upstream.outputs.digest }}" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No upstream changes detected."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream has changed!"
+          fi
+
+      - name: Seed digest file (first run only)
+        if: steps.compare.outputs.changed == 'seed'
+        run: |
+          echo "${{ steps.upstream.outputs.digest }}" > "${DIGEST_FILE}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${DIGEST_FILE}"
+          git commit -m "chore: seed upstream digest (no release)"
+          git push
+
+          echo "Seeded digest file — no release created."
+
+      - name: Compute add-on version
+        if: steps.compare.outputs.changed == 'true'
+        id: version
+        run: |
+          UPSTREAM_TAG="${{ steps.upstream.outputs.tag }}"
+
+          if [ -n "${UPSTREAM_TAG}" ]; then
+            # Strip leading 'v' if present
+            VERSION="${UPSTREAM_TAG#v}"
+          else
+            # Fallback to date-based version
+            VERSION="$(date +%Y.%m.%d)"
+          fi
+
+          # If this version tag already exists (upstream rebuilt same version),
+          # append a date suffix to make it unique
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            VERSION="${VERSION}.$(date +%Y%m%d)"
+            echo "Tag v${VERSION%.*} already exists, using: ${VERSION}"
+          fi
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "New add-on version: ${VERSION}"
+
+      - name: Update digest file and add-on version
+        if: steps.compare.outputs.changed == 'true'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Update stored digest
+          echo "${{ steps.upstream.outputs.digest }}" > "${DIGEST_FILE}"
+
+          # Update add-on version in config.yaml (use sed instead of yq to
+          # preserve formatting — yq rewrites the file and collapses multi-line
+          # strings, which breaks yamllint's line-length rule)
+          sed -i "s/^version: .*/version: ${VERSION}/" "${ADDON_SLUG}/config.yaml"
+
+          echo "Updated digest file and config.yaml to version ${VERSION}"
+
+      - name: Commit and tag
+        if: steps.compare.outputs.changed == 'true'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${DIGEST_FILE}" "${ADDON_SLUG}/config.yaml"
+          git commit -m "chore: auto-update to upstream ${VERSION}"
+          git push
+
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
+
+          echo "Pushed commit and tag v${VERSION}"

@@ -1,0 +1,159 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Home Assistant Add-on: AdGuard Home with Unbound & Redis
+# Initializes configuration on first run and sets dns.bind_hosts
+# ==============================================================================
+
+readonly CONFIG="/config/AdGuardHome/AdGuardHome.yaml"
+
+bashio::log.info "Starting initialization..."
+
+# --- 1. Create directories and copy/merge default configurations ---
+# Dynamically discovers all files from /etc/defaults/ (extracted from the
+# upstream image at build time). No hardcoded file lists — if upstream adds
+# new config files, they're automatically picked up.
+mkdir -p /config/userfilters
+
+for default_dir in /etc/defaults/*/; do
+    [ -d "${default_dir}" ] || continue
+    service_name="$(basename "${default_dir}")"
+    target_dir="/config/${service_name}"
+    mkdir -p "${target_dir}"
+
+    # Check for actual config files (not just directories) to distinguish
+    # a fresh install from an existing one
+    if [ -z "$(find "${target_dir}" -maxdepth 3 -type f -print -quit 2>/dev/null)" ]; then
+        # No config files yet — copy all defaults (preserves directory structure)
+        bashio::log.info "Initializing default ${service_name} configuration files..."
+        cp -r "${default_dir}"* "${target_dir}/"
+    else
+        # Existing config files — only add files that don't exist yet (upgrade path)
+        bashio::log.info "Existing ${service_name} config found. Checking for new default files..."
+        find "${default_dir}" -type f | while IFS= read -r src_file; do
+            rel_path="${src_file#"${default_dir}"}"
+            dest_file="${target_dir}/${rel_path}"
+
+            if [ ! -f "${dest_file}" ]; then
+                dest_parent="$(dirname "${dest_file}")"
+                mkdir -p "${dest_parent}"
+                bashio::log.info "Adding new default config: ${service_name}/${rel_path}"
+                cp "${src_file}" "${dest_file}"
+            fi
+        done
+    fi
+done
+
+# --- 2. Set Permissions ---
+bashio::log.info "Setting permissions on /config directory..."
+chown -R root:root /config/* 2>/dev/null || true
+
+# --- 3. Initialize DNSSEC Root Anchor ---
+ROOT_KEY_FILE="/etc/unbound/var/root.key"
+if [ ! -f "${ROOT_KEY_FILE}" ]; then
+    bashio::log.info "Initializing DNSSEC root trust anchor file..."
+
+    TEMP_RESOLV="/tmp/temp_resolv.conf"
+    echo "nameserver 1.1.1.1" > "${TEMP_RESOLV}"
+    echo "nameserver 1.0.0.1" >> "${TEMP_RESOLV}"
+
+    MAX_ANCHOR_RETRIES=5
+    RETRY_COUNT=0
+
+    # unbound-anchor returns 0 (no update needed) or 1 (updated successfully).
+    # Both mean the root.key file was created/refreshed. Only retry on other errors.
+    # NOTE: The "|| ANCHOR_RC=$?" pattern prevents bashio's set -e from killing
+    # the script on non-zero exit codes (including the expected rc=1 on first run).
+    while true; do
+        ANCHOR_RC=0
+        unbound-anchor -a "${ROOT_KEY_FILE}" -f "${TEMP_RESOLV}" || ANCHOR_RC=$?
+
+        if [ "${ANCHOR_RC}" -eq 0 ] || [ "${ANCHOR_RC}" -eq 1 ]; then
+            break
+        fi
+
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        if [ "${RETRY_COUNT}" -eq "${MAX_ANCHOR_RETRIES}" ]; then
+            break
+        fi
+
+        bashio::log.warning \
+            "unbound-anchor failed (rc=${ANCHOR_RC}, network not ready?), retrying (${RETRY_COUNT}/${MAX_ANCHOR_RETRIES}) in 2s..."
+        sleep 2
+    done
+
+    rm -f "${TEMP_RESOLV}"
+
+    if [ ! -f "${ROOT_KEY_FILE}" ]; then
+        bashio::log.fatal \
+            "Could not initialize DNSSEC root anchor after ${MAX_ANCHOR_RETRIES} retries."
+        exit 1
+    fi
+
+    bashio::log.info "DNSSEC root trust anchor initialized."
+else
+    bashio::log.info "DNSSEC root trust anchor already exists."
+fi
+
+# Ensure the unbound user can read the root key
+chown unbound:unbound "${ROOT_KEY_FILE}"
+
+# --- 4. Set dns.bind_hosts for HAOS CoreDNS coexistence ---
+# HAOS runs CoreDNS on 127.0.0.1:53 for internal container DNS resolution.
+# We must bind AdGuard Home DNS to the host's real interface IPs only (not 0.0.0.0)
+# to avoid conflicting with CoreDNS.
+#
+# This is the ONE config value this add-on modifies automatically.
+# It is inherently machine-specific and would never sync correctly between servers.
+#
+# NOTE FOR MULTI-SERVER SYNC USERS:
+# When syncing configs from another server (e.g., Unraid), the bind_hosts will
+# be auto-corrected on the next add-on restart. See DOCS.md for details.
+
+if bashio::fs.file_exists "${CONFIG}"; then
+    bashio::log.info "Configuring dns.bind_hosts for HAOS CoreDNS coexistence..."
+
+    # Collect all host network interface IPs
+    declare -a hosts=()
+
+    # Get all network interfaces
+    for interface in $(bashio::network.interfaces); do
+        # Collect IPv4 addresses (skip loopback and link-local)
+        for host in $(bashio::network.ipv4_address "${interface}"); do
+            host="${host%/*}"  # Strip netmask
+            # Skip loopback (127.x.x.x) and link-local (169.254.x.x)
+            if [[ "${host}" != 127.* ]] && [[ "${host}" != 169.254.* ]]; then
+                hosts+=("${host}")
+            fi
+        done
+
+        # Collect IPv6 addresses
+        for host in $(bashio::network.ipv6_address "${interface}"); do
+            host="${host%/*}"  # Strip prefix length
+            # Handle link-local addresses (fe80::/10) — append %interface
+            if [[ "${host}" == fe80:* ]]; then
+                host="${host}%${interface}"
+            fi
+            hosts+=("${host}")
+        done
+    done
+
+    # Also bind to the add-on's own IP address
+    addon_ip=$(bashio::addon.ip_address)
+    if bashio::var.has_value "${addon_ip}"; then
+        hosts+=("${addon_ip}")
+    fi
+
+    # Always include IPv6 loopback for local services
+    hosts+=("::1")
+
+    # Write bind_hosts to AdGuardHome.yaml using yq
+    yq --inplace e '.dns.bind_hosts = []' "${CONFIG}"
+    for host in "${hosts[@]}"; do
+        host="${host}" yq --inplace e '.dns.bind_hosts += [env(host)]' "${CONFIG}"
+    done
+
+    bashio::log.info "dns.bind_hosts set to: ${hosts[*]}"
+fi
+
+bashio::log.info "Initialization complete."

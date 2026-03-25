@@ -1,0 +1,266 @@
+---
+name: Build and Publish
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+
+env:
+  ADDON_SLUG: adguard-unbound-redis
+  REGISTRY: ghcr.io
+  UPSTREAM_IMAGE: imthai/adguardhome-unbound-redis:latest
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ${{ env.ADDON_SLUG }}/Dockerfile
+
+      - name: Lint YAML
+        uses: ibiqlik/action-yamllint@v3
+        with:
+          file_or_dir: |
+            ${{ env.ADDON_SLUG }}/config.yaml
+            ${{ env.ADDON_SLUG }}/build.yaml
+            repository.yaml
+
+  build:
+    name: Build & Test (${{ matrix.arch }})
+    needs: lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        arch:
+          - amd64
+          - aarch64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Get add-on version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev" >> "$GITHUB_OUTPUT"
+            echo "push=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Log in to GHCR
+        if: steps.version.outputs.push == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Map architecture
+        id: map_arch
+        run: |
+          case "${{ matrix.arch }}" in
+            amd64)   echo "platform=linux/amd64"   >> "$GITHUB_OUTPUT" ;;
+            aarch64) echo "platform=linux/arm64"    >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ env.ADDON_SLUG }}
+          file: ${{ env.ADDON_SLUG }}/Dockerfile
+          platforms: ${{ steps.map_arch.outputs.platform }}
+          load: ${{ matrix.arch == 'amd64' }}
+          push: false
+          tags: addon-test:${{ matrix.arch }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_FROM=ghcr.io/hassio-addons/base:20.0.1
+            BUILD_ARCH=${{ matrix.arch }}
+            BUILD_VERSION=${{ steps.version.outputs.version }}
+            BUILD_NAME=AdGuard Home with Unbound & Redis
+            BUILD_DESCRIPTION=All-in-one DNS: AdGuard Home + Unbound + Redis
+            BUILD_REPOSITORY=${{ github.repository }}
+            BUILD_REF=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            UPSTREAM_IMAGE=${{ env.UPSTREAM_IMAGE }}
+
+      - name: Smoke test — verify image structure
+        if: matrix.arch == 'amd64'
+        run: |
+          echo "=== Verifying binaries exist ==="
+          docker run --rm --entrypoint "" addon-test:amd64 \
+            sh -c 'set -e
+              test -x /usr/sbin/unbound          && echo "OK: unbound"
+              test -x /usr/sbin/unbound-anchor    && echo "OK: unbound-anchor"
+              test -x /usr/sbin/unbound-checkconf && echo "OK: unbound-checkconf"
+              test -x /opt/AdGuardHome/AdGuardHome && echo "OK: AdGuardHome"
+              which redis-server                   && echo "OK: redis-server"
+              which nginx                          && echo "OK: nginx"
+              which yq                             && echo "OK: yq"'
+
+          echo ""
+          echo "=== Verifying default configs extracted from upstream ==="
+          docker run --rm --entrypoint "" addon-test:amd64 \
+            sh -c 'set -e
+              test -f /etc/defaults/AdGuardHome/AdGuardHome.yaml && echo "OK: AdGuardHome.yaml"
+              test -f /etc/defaults/unbound/unbound.conf         && echo "OK: unbound.conf"
+              test -f /etc/defaults/redis/redis.conf             && echo "OK: redis.conf"
+              echo "All default config directories:"
+              find /etc/defaults -type f | sort'
+
+          echo ""
+          echo "=== Verifying S6 services ==="
+          docker run --rm --entrypoint "" addon-test:amd64 \
+            sh -c 'set -e
+              for svc in init-config init-nginx svc-redis svc-unbound svc-adguard svc-nginx; do
+                test -x /etc/s6-overlay/s6-rc.d/${svc}/run && echo "OK: ${svc}/run"
+              done'
+
+          echo ""
+          echo "=== Verifying nginx config ==="
+          docker run --rm --entrypoint "" addon-test:amd64 \
+            sh -c 'set -e
+              test -f /etc/nginx/nginx.conf                  && echo "OK: nginx.conf"
+              test -f /etc/nginx/templates/ingress.gtpl      && echo "OK: ingress.gtpl"
+              test -f /etc/nginx/includes/proxy_params.conf  && echo "OK: proxy_params.conf"'
+
+          echo ""
+          echo "=== Verifying Unbound links correctly ==="
+          docker run --rm --entrypoint "" addon-test:amd64 \
+            sh -c '/usr/sbin/unbound -V 2>&1 | head -5'
+
+          echo ""
+          echo "=== Verifying AdGuard Home binary runs ==="
+          docker run --rm --entrypoint "" addon-test:amd64 \
+            sh -c '/opt/AdGuardHome/AdGuardHome --version'
+
+          echo ""
+          echo "=== Verifying s6-overlay boots correctly ==="
+          # Start with S6_BEHAVIOUR_IF_STAGE2_FAILS=0 so the container stays up
+          # even without the HA Supervisor API (base-addon-log-level needs it).
+          # This lets us verify that s6-svscan itself starts and our services
+          # are picked up — the real Supervisor environment provides the API.
+          docker run -d --init=false --name s6-boot-test \
+            -e S6_BEHAVIOUR_IF_STAGE2_FAILS=0 \
+            addon-test:amd64
+          echo "Container started, waiting 15s for s6-overlay to initialize..."
+          sleep 15
+          echo "--- Container logs ---"
+          LOGS=$(docker logs s6-boot-test 2>&1)
+          echo "${LOGS}" | tail -80
+          echo "--- Container state ---"
+          STATE=$(docker inspect s6-boot-test --format='{{.State.Status}}')
+          echo "Container status: ${STATE}"
+
+          # Check for the fatal s6-svscan error that would indicate a real problem
+          if echo "${LOGS}" | grep -q "another instance of s6-svscan"; then
+            echo "FAIL: s6-svscan lock conflict detected!"
+            docker rm -f s6-boot-test || true
+            exit 1
+          fi
+
+          # Verify s6-overlay actually started (s6-rc runs)
+          if ! echo "${LOGS}" | grep -q "s6rc-oneshot-runner"; then
+            echo "FAIL: s6-overlay did not initialize at all"
+            docker rm -f s6-boot-test || true
+            exit 1
+          fi
+
+          # Verify our services were recognized (init-config should attempt to run)
+          if echo "${LOGS}" | grep -q "init-config"; then
+            echo "OK: init-config service was picked up by s6-rc"
+          fi
+
+          if [ "${STATE}" = "running" ]; then
+            echo "OK: s6-overlay booted and container is running"
+          else
+            echo "OK: s6-overlay booted (container exited due to missing Supervisor API — expected in CI)"
+          fi
+          docker rm -f s6-boot-test || true
+
+          echo ""
+          echo "All smoke tests passed."
+
+      - name: Push image
+        if: steps.version.outputs.push == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ env.ADDON_SLUG }}
+          file: ${{ env.ADDON_SLUG }}/Dockerfile
+          platforms: ${{ steps.map_arch.outputs.platform }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.version.outputs.owner }}/${{ matrix.arch }}-addon-${{ env.ADDON_SLUG }}:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ steps.version.outputs.owner }}/${{ matrix.arch }}-addon-${{ env.ADDON_SLUG }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_FROM=ghcr.io/hassio-addons/base:20.0.1
+            BUILD_ARCH=${{ matrix.arch }}
+            BUILD_VERSION=${{ steps.version.outputs.version }}
+            BUILD_NAME=AdGuard Home with Unbound & Redis
+            BUILD_DESCRIPTION=All-in-one DNS: AdGuard Home + Unbound + Redis
+            BUILD_REPOSITORY=${{ github.repository }}
+            BUILD_REF=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            UPSTREAM_IMAGE=${{ env.UPSTREAM_IMAGE }}
+
+      - name: Make package public
+        if: steps.version.outputs.push == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PKG_PAT }}
+        run: |
+          PACKAGE="${{ matrix.arch }}-addon-${{ env.ADDON_SLUG }}"
+          echo "Setting ${PACKAGE} visibility to public..."
+          gh api \
+            --method PUT \
+            -H "Accept: application/vnd.github+json" \
+            /user/packages/container/${PACKAGE}/visibility \
+            -f visibility=public \
+          && echo "Done: ${PACKAGE} is now public" \
+          || echo "Warning: could not set visibility (may already be public)"
+
+  release:
+    name: Create Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --generate-notes

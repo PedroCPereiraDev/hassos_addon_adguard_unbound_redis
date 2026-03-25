@@ -1,0 +1,26 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Home Assistant Add-on: AdGuard Home with Unbound & Redis
+# Runs AdGuard Home
+# ==============================================================================
+
+# Wait for Unbound to be responsive on port 5335
+bashio::log.info "Waiting for Unbound DNS resolver..."
+for i in $(seq 1 30); do
+    if nc -z 127.0.0.1 5335 2>/dev/null; then
+        break
+    fi
+    if [ "${i}" -eq 30 ]; then
+        bashio::log.fatal "Unbound not responsive after 30 seconds."
+        exit 1
+    fi
+    sleep 1
+done
+bashio::log.info "Unbound DNS resolver ready."
+
+bashio::log.info "Starting AdGuard Home..."
+exec /opt/AdGuardHome/AdGuardHome \
+    -c /config/AdGuardHome/AdGuardHome.yaml \
+    -w /config \
+    --no-check-update

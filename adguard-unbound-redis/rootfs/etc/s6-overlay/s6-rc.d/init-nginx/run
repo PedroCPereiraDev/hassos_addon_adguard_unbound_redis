@@ -1,0 +1,28 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Home Assistant Add-on: AdGuard Home with Unbound & Redis
+# Generates nginx configuration for ingress
+# ==============================================================================
+
+declare ingress_interface
+declare ingress_port
+declare ingress_entry
+
+bashio::log.info "Generating nginx configuration for ingress..."
+
+# Get the ingress configuration
+ingress_interface=$(bashio::addon.ip_address)
+ingress_port=$(bashio::addon.ingress_port)
+ingress_entry=$(bashio::addon.ingress_entry)
+
+# Generate upstream config
+bashio::var.json \
+    interface "${ingress_interface}" \
+    port "${ingress_port}" \
+    ingress_entry "${ingress_entry}" \
+    | tempio \
+        -template /etc/nginx/templates/ingress.gtpl \
+        -out /etc/nginx/servers/ingress.conf
+
+bashio::log.info "Nginx configuration generated."

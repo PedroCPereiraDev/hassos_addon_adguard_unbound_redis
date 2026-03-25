@@ -32,8 +32,15 @@ It combines three services in a single add-on for a complete DNS solution:
 3. Start the add-on. On first run, default configuration files are created
    automatically.
 
-4. Open the web UI (via the sidebar or `http://<your-ha-ip>:3000`) and change the
-   default password (`admin` / `admin`).
+4. Open the web UI (via the sidebar or `http://<your-ha-ip>:3000`) and log in
+   with the default credentials (`admin` / `admin`).
+
+5. **Change the default password** by editing `AdGuardHome/AdGuardHome.yaml` in
+   your config folder — the password is stored as a bcrypt hash. See the
+   [add-on documentation](adguard-unbound-redis/DOCS.md#changing-the-password)
+   for step-by-step instructions.
+
+6. Set your router/DHCP to use your Home Assistant IP as the DNS server.
 
 ## Configuration
 

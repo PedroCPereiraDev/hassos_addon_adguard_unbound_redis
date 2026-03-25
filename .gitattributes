@@ -1,0 +1,3 @@
+# Force LF line endings for all text files.
+# Critical for Docker projects — shell scripts with CRLF will fail in Linux containers.
+* text=auto eol=lf

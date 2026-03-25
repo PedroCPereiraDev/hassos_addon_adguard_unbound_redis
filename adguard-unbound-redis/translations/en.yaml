@@ -1,0 +1,11 @@
+---
+configuration: {}
+network:
+  53/tcp:
+    name: DNS server (TCP)
+  53/udp:
+    name: DNS server (UDP)
+  3000/tcp:
+    name: AdGuard Home Web UI (direct access)
+  853/tcp:
+    name: DNS-over-TLS

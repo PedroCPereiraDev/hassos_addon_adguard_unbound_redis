@@ -1,0 +1,23 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Home Assistant Add-on: AdGuard Home with Unbound & Redis
+# Runs Unbound DNS resolver
+# ==============================================================================
+
+# Wait for Redis Unix socket to be available
+bashio::log.info "Waiting for Redis socket..."
+for i in $(seq 1 30); do
+    if [ -S /tmp/redis.sock ]; then
+        break
+    fi
+    if [ "${i}" -eq 30 ]; then
+        bashio::log.fatal "Redis socket not available after 30 seconds."
+        exit 1
+    fi
+    sleep 1
+done
+bashio::log.info "Redis socket ready."
+
+bashio::log.info "Starting Unbound DNS resolver..."
+exec unbound -d -c /config/unbound/unbound.conf

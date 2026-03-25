@@ -1,0 +1,8 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Home Assistant Add-on: AdGuard Home with Unbound & Redis
+# Runs Redis server
+# ==============================================================================
+bashio::log.info "Starting Redis server..."
+exec redis-server /config/redis/redis.conf --daemonize no

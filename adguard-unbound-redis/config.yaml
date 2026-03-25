@@ -1,0 +1,46 @@
+---
+name: AdGuard Home with Unbound & Redis
+version: 0.107.73
+slug: adguard-unbound-redis
+description: >-
+  All-in-one DNS solution combining AdGuard Home ad blocking,
+  Unbound recursive resolver with prefetching, and Redis
+  in-memory caching — built for speed, privacy, and performance.
+  Config folder is compatible with the standalone Docker container
+  for multi-server sync.
+url: https://github.com/PedroCPereiraDev/hassos_addon_adguard_unbound_redis
+arch:
+  - aarch64
+  - amd64
+ingress: true
+ingress_port: 0
+ingress_stream: true
+panel_icon: mdi:shield-check
+panel_title: AdGuard DNS
+startup: services
+init: false
+hassio_api: true
+host_network: true
+ports:
+  53/tcp: null
+  53/udp: null
+  3000/tcp: null
+  853/tcp: null
+ports_description:
+  53/tcp: DNS server (TCP)
+  53/udp: DNS server (UDP)
+  3000/tcp: AdGuard Home Web UI (direct access)
+  853/tcp: DNS-over-TLS
+map:
+  - type: addon_config
+    read_only: false
+  - type: ssl
+options: {}
+schema: {}
+environment:
+  XDG_CONFIG_HOME: /config
+backup_exclude:
+  - "*/data/querylog.*"
+  - "*/data/stats.*"
+watchdog: tcp://[HOST]:53
+image: ghcr.io/pedrocpereiradev/{arch}-addon-adguard-unbound-redis

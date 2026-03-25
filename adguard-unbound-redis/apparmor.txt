@@ -1,0 +1,51 @@
+#include <tunables/global>
+
+profile adguard-unbound-redis flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  # Broad file and signal access (same pattern as official dnsmasq add-on)
+  file,
+  signal,
+
+  # Network access
+  network inet dgram,
+  network inet stream,
+  network inet6 dgram,
+  network inet6 stream,
+  network inet raw,
+  network inet6 raw,
+  network netlink raw,
+  network unix stream,
+  network unix dgram,
+
+  # Capabilities required by our services
+  capability chown,
+  capability dac_override,
+  capability dac_read_search,
+  capability fowner,
+  capability fsetid,
+  capability setuid,
+  capability setgid,
+  capability net_bind_service,
+  capability net_raw,
+  capability kill,
+
+  # S6-Overlay & Bashio
+  /init rix,
+  /bin/** ix,
+  /usr/bin/** ix,
+  /usr/lib/bashio/** ix,
+  /etc/s6/** rix,
+  /run/s6/** rwix,
+  /run/{,**} rwk,
+  /package/** ix,
+  /command/** ix,
+  /etc/s6-overlay/** rix,
+  /etc/services.d/** rwix,
+  /etc/cont-init.d/** rwix,
+  /etc/cont-finish.d/** rwix,
+
+  # Temp and data
+  /tmp/** rwk,
+  /data/** rw,
+}
