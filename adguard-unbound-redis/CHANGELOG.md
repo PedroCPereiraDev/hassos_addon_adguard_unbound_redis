@@ -11,8 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release
 - AdGuard Home with Unbound recursive DNS resolver and Redis in-memory caching
-- Home Assistant ingress support for web UI access via sidebar
-- Direct web UI access on port 3000
+- Web UI access on port 3000 ("Open Web UI" button in sidebar)
 - S6-overlay v3 process supervision for all services
 - Automatic HAOS CoreDNS coexistence (dns.bind_hosts auto-configuration)
 - Config folder fully compatible with standalone Docker container for multi-server sync

@@ -65,7 +65,9 @@ LABEL \
 
 # Install runtime dependencies
 # hadolint ignore=DL3018
-RUN apk add --no-cache \
+RUN sed -i -E 's/^(lib(crypto|ssl)3)=.*/\1/' /etc/apk/world && \
+    apk upgrade --no-cache && \
+    apk add --no-cache \
     redis \
     nginx \
     yq-go \

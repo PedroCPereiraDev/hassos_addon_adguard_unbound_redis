@@ -12,20 +12,18 @@ url: https://github.com/PedroCPereiraDev/hassos_addon_adguard_unbound_redis
 arch:
   - aarch64
   - amd64
-ingress: true
-ingress_port: 0
-ingress_stream: true
 panel_icon: mdi:shield-check
 panel_title: AdGuard DNS
+webui: http://[HOST]:[PORT:3000]
 startup: services
 init: false
 hassio_api: true
 host_network: true
 ports:
-  53/tcp: null
-  53/udp: null
-  3000/tcp: null
-  853/tcp: null
+  53/tcp: 53
+  53/udp: 53
+  3000/tcp: 3000
+  853/tcp: 853
 ports_description:
   53/tcp: DNS server (TCP)
   53/udp: DNS server (UDP)

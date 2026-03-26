@@ -4,5 +4,9 @@
 # Home Assistant Add-on: AdGuard Home with Unbound & Redis
 # Runs nginx reverse proxy for ingress
 # ==============================================================================
+if [[ -f /tmp/.nginx_disabled ]]; then
+    bashio::log.info "Nginx not needed (ingress disabled), idling..."
+    exec sleep infinity
+fi
 bashio::log.info "Starting nginx..."
 exec nginx -g 'daemon off;'
