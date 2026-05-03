@@ -1,6 +1,6 @@
 ---
 name: AdGuard Home with Unbound & Redis
-version: 0.107.73
+version: 0.107.74
 slug: adguard-unbound-redis
 description: >-
   All-in-one DNS solution combining AdGuard Home ad blocking,
