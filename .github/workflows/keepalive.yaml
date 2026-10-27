@@ -1,0 +1,42 @@
+---
+name: Keepalive
+
+# GitHub disables scheduled workflows (check-upstream.yaml's daily cron) after
+# 60 days without a commit to the repo — workflow runs alone don't count. This
+# makes a trivial commit only once the repo gets close to that cutoff.
+on:
+  schedule:
+    # Check weekly on Mondays at 03:00 UTC
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    name: Keep scheduled workflows enabled
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Commit heartbeat if nearing the 60-day cutoff
+        run: |
+          DAYS_SINCE=$(( ($(date +%s) - $(git log -1 --format=%ct)) / 86400 ))
+          echo "Days since last commit: ${DAYS_SINCE}"
+
+          # Well under 60 days so a skipped weekly run can't miss the window
+          if [ "${DAYS_SINCE}" -lt 45 ]; then
+            echo "Repository active enough — nothing to do."
+            exit 0
+          fi
+
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .github/.keepalive
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/.keepalive
+          git commit -m "chore: keepalive commit to prevent scheduled workflow disablement"
+          git push
+
+          echo "Committed keepalive heartbeat."
