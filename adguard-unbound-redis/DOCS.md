@@ -364,16 +364,18 @@ This add-on **automatically tracks the upstream Docker image**
 (`imthai/adguardhome-unbound-redis`). A daily check runs to detect when a new
 version is published upstream. When a change is detected:
 
-1. A new version is tagged automatically in this repository.
-2. The CI pipeline builds the add-on with the latest upstream binaries and
-   configs.
-3. Smoke tests verify the image structure and binaries before publishing.
-4. If tests pass, the new version is pushed to the container registry.
+1. The CI pipeline builds the add-on with the latest upstream binaries and
+   configs, and compiles the latest Unbound release.
+2. Smoke tests verify the image structure and binaries.
+3. If tests pass, the images are pushed to the container registry.
+4. Only then is the new version published in this repository (version bump,
+   changelog entry, tag and release), which is when Home Assistant offers the
+   update.
 
 This means you get upstream updates (new AdGuard Home versions, Unbound patches,
 config improvements) **without any manual intervention**. If an upstream change
-breaks something, the smoke tests block the release and no broken update reaches
-your system.
+breaks something, the smoke tests block the release and the update is never
+offered, so you stay on the version you have.
 
 ## Quick Reference — Common Tasks
 

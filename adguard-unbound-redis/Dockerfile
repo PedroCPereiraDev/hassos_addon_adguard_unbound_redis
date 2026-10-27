@@ -15,6 +15,9 @@ FROM ${UPSTREAM_IMAGE} AS upstream
 FROM alpine:${ALPINE_VERSION} AS builder
 
 ARG UNBOUND_URL="https://nlnetlabs.nl/downloads/unbound/unbound-latest.tar.gz"
+# Optional checksum of the tarball at UNBOUND_URL, verified when set. CI passes
+# it so the cached compile layer is discarded whenever "latest" changes.
+ARG UNBOUND_SHA256=""
 
 WORKDIR /build
 
@@ -36,6 +39,10 @@ RUN apk add --no-cache \
 WORKDIR /tmp/src
 RUN set -eux; \
     wget --progress=dot:giga "${UNBOUND_URL}" -O /tmp/unbound.tar.gz; \
+    if [ -n "${UNBOUND_SHA256}" ]; then \
+        echo "${UNBOUND_SHA256}  /tmp/unbound.tar.gz" > /tmp/unbound.sha256; \
+        sha256sum -c /tmp/unbound.sha256; \
+    fi; \
     tar -xzf /tmp/unbound.tar.gz --strip-components=1 -C .; \
     ./configure \
         --prefix=/usr \
@@ -69,7 +76,6 @@ RUN sed -i -E 's/^(lib(crypto|ssl)3)=.*/\1/' /etc/apk/world && \
     apk upgrade --no-cache && \
     apk add --no-cache \
     redis \
-    nginx \
     yq-go \
     hiredis \
     libevent \
@@ -94,7 +100,7 @@ COPY --from=builder /build/install/usr/sbin/unbound-control /usr/sbin/unbound-co
 # Copy AdGuardHome binary from upstream (Go binary — fully self-contained)
 COPY --from=upstream /opt/AdGuardHome/AdGuardHome /opt/AdGuardHome/AdGuardHome
 
-# Copy root filesystem overlay (S6 services, nginx configs)
+# Copy root filesystem overlay (S6 services)
 COPY rootfs /
 
 # Copy default configuration files from upstream (dynamic — always in sync)
@@ -105,18 +111,12 @@ COPY --from=upstream /config_default/ /etc/defaults/
 # Ensure S6 scripts are executable
 RUN chmod +x \
     /etc/s6-overlay/s6-rc.d/init-config/run \
-    /etc/s6-overlay/s6-rc.d/init-nginx/run \
     /etc/s6-overlay/s6-rc.d/svc-redis/run \
     /etc/s6-overlay/s6-rc.d/svc-redis/finish \
     /etc/s6-overlay/s6-rc.d/svc-unbound/run \
     /etc/s6-overlay/s6-rc.d/svc-unbound/finish \
     /etc/s6-overlay/s6-rc.d/svc-adguard/run \
-    /etc/s6-overlay/s6-rc.d/svc-adguard/finish \
-    /etc/s6-overlay/s6-rc.d/svc-nginx/run \
-    /etc/s6-overlay/s6-rc.d/svc-nginx/finish
-
-# Remove default nginx config (replaced by our own)
-RUN rm -rf /etc/nginx/http.d /etc/nginx/conf.d 2>/dev/null || true
+    /etc/s6-overlay/s6-rc.d/svc-adguard/finish
 
 # Set configuration environment variable (matches upstream)
 ENV XDG_CONFIG_HOME=/config

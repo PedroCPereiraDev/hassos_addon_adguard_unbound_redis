@@ -11,11 +11,18 @@ on:
     branches:
       - main
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Add-on version to build and publish
+        required: true
+        type: string
 
 env:
   ADDON_SLUG: adguard-unbound-redis
   REGISTRY: ghcr.io
   UPSTREAM_IMAGE: imthai/adguardhome-unbound-redis:latest
+  UNBOUND_URL: https://nlnetlabs.nl/downloads/unbound/unbound-latest.tar.gz
 
 jobs:
   lint:
@@ -56,8 +63,14 @@ jobs:
 
       - name: Get add-on version
         id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+          if [[ -n "${INPUT_VERSION}" ]]; then
+            # Called from check-upstream.yaml with the version it is releasing
+            echo "version=${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
             echo "push=true" >> "$GITHUB_OUTPUT"
           elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]] && [[ "${GITHUB_REF}" == refs/heads/main ]]; then
@@ -70,8 +83,19 @@ jobs:
             echo "push=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}" >> "$GITHUB_OUTPUT"
           fi
           echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-          # github.event.head_commit is only set on push events
-          echo "date=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
+          # Image creation time (github.event.head_commit is only set on push
+          # events, and the checked-out commit can be much older than the build)
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Get Unbound source checksum
+        id: unbound
+        run: |
+          # The tarball behind UNBOUND_URL changes with each Unbound release
+          # while the Dockerfile stays the same. Passing its checksum as a build
+          # arg means the cached compile layer is only reused while the tarball
+          # is unchanged (the Dockerfile also verifies the download against it).
+          curl -sfL -o /tmp/unbound.tar.gz "${UNBOUND_URL}"
+          echo "sha256=$(sha256sum /tmp/unbound.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -116,6 +140,8 @@ jobs:
             BUILD_REF=${{ github.sha }}
             BUILD_DATE=${{ steps.version.outputs.date }}
             UPSTREAM_IMAGE=${{ env.UPSTREAM_IMAGE }}
+            UNBOUND_URL=${{ env.UNBOUND_URL }}
+            UNBOUND_SHA256=${{ steps.unbound.outputs.sha256 }}
 
       - name: Smoke test — verify image structure
         if: matrix.arch == 'amd64'
@@ -128,7 +154,6 @@ jobs:
               test -x /usr/sbin/unbound-checkconf && echo "OK: unbound-checkconf"
               test -x /opt/AdGuardHome/AdGuardHome && echo "OK: AdGuardHome"
               which redis-server                   && echo "OK: redis-server"
-              which nginx                          && echo "OK: nginx"
               which yq                             && echo "OK: yq"'
 
           echo ""
@@ -145,17 +170,9 @@ jobs:
           echo "=== Verifying S6 services ==="
           docker run --rm --entrypoint "" addon-test:amd64 \
             sh -c 'set -e
-              for svc in init-config init-nginx svc-redis svc-unbound svc-adguard svc-nginx; do
+              for svc in init-config svc-redis svc-unbound svc-adguard; do
                 test -x /etc/s6-overlay/s6-rc.d/${svc}/run && echo "OK: ${svc}/run"
               done'
-
-          echo ""
-          echo "=== Verifying nginx config ==="
-          docker run --rm --entrypoint "" addon-test:amd64 \
-            sh -c 'set -e
-              test -f /etc/nginx/nginx.conf                  && echo "OK: nginx.conf"
-              test -f /etc/nginx/templates/ingress.gtpl      && echo "OK: ingress.gtpl"
-              test -f /etc/nginx/includes/proxy_params.conf  && echo "OK: proxy_params.conf"'
 
           echo ""
           echo "=== Verifying Unbound links correctly ==="
@@ -237,6 +254,8 @@ jobs:
             BUILD_REF=${{ github.sha }}
             BUILD_DATE=${{ steps.version.outputs.date }}
             UPSTREAM_IMAGE=${{ env.UPSTREAM_IMAGE }}
+            UNBOUND_URL=${{ env.UNBOUND_URL }}
+            UNBOUND_SHA256=${{ steps.unbound.outputs.sha256 }}
 
       - name: Make package public
         if: steps.version.outputs.push == 'true'
