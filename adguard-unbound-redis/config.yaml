@@ -12,8 +12,6 @@ url: https://github.com/PedroCPereiraDev/hassos_addon_adguard_unbound_redis
 arch:
   - aarch64
   - amd64
-panel_icon: mdi:shield-check
-panel_title: AdGuard DNS
 webui: http://[HOST]:[PORT:3000]
 startup: services
 init: false

@@ -34,6 +34,6 @@ at build time. These files contain standard configuration values for their
 respective software components (AdGuard Home, Unbound, Redis) and are included
 to maintain config-folder compatibility with the upstream Docker container.
 
-All original add-on code (Dockerfile, S6 service scripts, nginx configuration,
-CI/CD workflows, documentation) is authored by PedroCPereiraDev and licensed
-under the MIT License above.
+All original add-on code (Dockerfile, S6 service scripts, CI/CD workflows,
+documentation) is authored by PedroCPereiraDev and licensed under the MIT
+License above.

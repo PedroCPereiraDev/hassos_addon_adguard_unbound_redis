@@ -18,7 +18,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      actions: write
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+      digest: ${{ steps.upstream.outputs.digest }}
+      tag: ${{ steps.upstream.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -112,47 +116,91 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "New add-on version: ${VERSION}"
 
-      - name: Update digest file and add-on version
-        if: steps.compare.outputs.changed == 'true'
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
+  build:
+    name: Build
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    # Build, smoke-test and push the images *before* the new version is
+    # committed, so Home Assistant never offers a version whose image is
+    # missing. If this fails, nothing is committed and the next daily run
+    # retries.
+    uses: ./.github/workflows/build.yaml
+    with:
+      version: ${{ needs.check.outputs.version }}
+    secrets: inherit
+    permissions:
+      contents: write
+      packages: write
 
+  release:
+    name: Publish new version
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Update digest file, add-on version and changelog
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          DIGEST: ${{ needs.check.outputs.digest }}
+          UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
+        run: |
           # Update stored digest
-          echo "${{ steps.upstream.outputs.digest }}" > "${DIGEST_FILE}"
+          echo "${DIGEST}" > "${DIGEST_FILE}"
 
           # Update add-on version in config.yaml (use sed instead of yq to
           # preserve formatting — yq rewrites the file and collapses multi-line
           # strings, which breaks yamllint's line-length rule)
           sed -i "s/^version: .*/version: ${VERSION}/" "${ADDON_SLUG}/config.yaml"
 
-          echo "Updated digest file and config.yaml to version ${VERSION}"
+          # Release notes, reused as the changelog entry (Home Assistant shows
+          # CHANGELOG.md in the add-on update dialog)
+          {
+            echo "### Changed"
+            echo ""
+            if [ -n "${UPSTREAM_TAG}" ]; then
+              AGH_TAG="v${UPSTREAM_TAG#v}"
+              echo "- Rebuilt from upstream image \`${UPSTREAM_REPO}:${UPSTREAM_TAG}\`"
+              echo "  (AdGuard Home [${AGH_TAG}](https://github.com/AdguardTeam/AdGuardHome/releases/tag/${AGH_TAG}))"
+            else
+              echo "- Rebuilt from the latest upstream image \`${UPSTREAM_REPO}:latest\`"
+            fi
+          } > /tmp/release-notes.md
 
-      - name: Commit and tag
-        if: steps.compare.outputs.changed == 'true'
+          # Insert the entry above the most recent release
+          awk -v heading="## [${VERSION}] - $(date -u +%Y-%m-%d)" -v notes=/tmp/release-notes.md '
+            !done && /^## \[/ {
+              print heading
+              print ""
+              while ((getline line < notes) > 0) print line
+              print ""
+              done = 1
+            }
+            { print }
+          ' "${ADDON_SLUG}/CHANGELOG.md" > /tmp/CHANGELOG.md
+          mv /tmp/CHANGELOG.md "${ADDON_SLUG}/CHANGELOG.md"
+
+          echo "Updated digest file, config.yaml and CHANGELOG.md to version ${VERSION}"
+
+      - name: Commit, tag and create release
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${DIGEST_FILE}" "${ADDON_SLUG}/config.yaml"
+          git add "${DIGEST_FILE}" "${ADDON_SLUG}/config.yaml" "${ADDON_SLUG}/CHANGELOG.md"
           git commit -m "chore: auto-update to upstream ${VERSION}"
           git push
 
           git tag "v${VERSION}"
           git push origin "v${VERSION}"
 
-          echo "Pushed commit and tag v${VERSION}"
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --notes-file /tmp/release-notes.md
 
-      - name: Trigger build for new tag
-        if: steps.compare.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-
-          # Pushes made with GITHUB_TOKEN don't trigger other workflows, so the
-          # tag push above never starts build.yaml on its own. workflow_dispatch
-          # is exempt from that rule.
-          gh workflow run build.yaml --repo "${GITHUB_REPOSITORY}" --ref "v${VERSION}"
-
-          echo "Dispatched Build and Publish for v${VERSION}"
+          echo "Published v${VERSION}"
