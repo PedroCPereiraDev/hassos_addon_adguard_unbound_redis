@@ -10,6 +10,7 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 env:
   ADDON_SLUG: adguard-unbound-redis
@@ -59,11 +60,18 @@ jobs:
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
             echo "push=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]] && [[ "${GITHUB_REF}" == refs/heads/main ]]; then
+            # Manual run on main: publish the version currently in config.yaml
+            # (rebuilds a release image without having to move its tag)
+            echo "version=$(sed -n 's/^version: //p' "${ADDON_SLUG}/config.yaml")" >> "$GITHUB_OUTPUT"
+            echo "push=true" >> "$GITHUB_OUTPUT"
           else
             echo "version=dev" >> "$GITHUB_OUTPUT"
             echo "push=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}" >> "$GITHUB_OUTPUT"
           fi
           echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          # github.event.head_commit is only set on push events
+          echo "date=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -106,7 +114,7 @@ jobs:
             BUILD_DESCRIPTION=All-in-one DNS: AdGuard Home + Unbound + Redis
             BUILD_REPOSITORY=${{ github.repository }}
             BUILD_REF=${{ github.sha }}
-            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            BUILD_DATE=${{ steps.version.outputs.date }}
             UPSTREAM_IMAGE=${{ env.UPSTREAM_IMAGE }}
 
       - name: Smoke test — verify image structure
@@ -227,7 +235,7 @@ jobs:
             BUILD_DESCRIPTION=All-in-one DNS: AdGuard Home + Unbound + Redis
             BUILD_REPOSITORY=${{ github.repository }}
             BUILD_REF=${{ github.sha }}
-            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            BUILD_DATE=${{ steps.version.outputs.date }}
             UPSTREAM_IMAGE=${{ env.UPSTREAM_IMAGE }}
 
       - name: Make package public
